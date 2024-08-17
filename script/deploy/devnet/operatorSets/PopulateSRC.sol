@@ -10,7 +10,7 @@ import "forge-std/Script.sol";
 contract PopulateSRC is Script, Test, ExistingDeploymentParser {
     string internal constant TEST_MNEMONIC = "hundred february vast fluid produce radar notice ridge armed glare panther balance";
 
-    uint32 constant NUM_OPSETS = 10;
+    uint32 constant NUM_OPSETS = 1;
     uint32 constant NUM_OPERATORS_PER_OPSET = 2048;
     uint256 constant TOKEN_AMOUNT_PER_OPERATOR = 1 ether;
     
@@ -40,7 +40,7 @@ contract PopulateSRC is Script, Test, ExistingDeploymentParser {
         }
 
         vm.broadcast();
-        OperatorFactory operatorFactory = new OperatorFactory(delegationManager, strategyManager);
+        OperatorFactory operatorFactory = new OperatorFactory(delegationManager, strategyManager, avsDirectory);
         address[][] memory operators = new address[][](strategies.length);
         for (uint i = 0; i < operators.length; i++) {
             // todo: send operators[i].length*1 ether of strategy token to operatorfactory
@@ -55,17 +55,25 @@ contract PopulateSRC is Script, Test, ExistingDeploymentParser {
             }
             
             vm.startBroadcast();
-            operators[i] = operatorFactory.createManyOperators(strategies[i], NUM_OPERATORS_PER_OPSET, TOKEN_AMOUNT_PER_OPERATOR);
+            operators[i] = operatorFactory.createManyOperators(strategies[i], NUM_OPERATORS_PER_OPSET);
             for (uint j = 0; j < strategies[i].length; j++) {
                 operatorFactory.depositForOperators(strategies[i][j], operators[i], TOKEN_AMOUNT_PER_OPERATOR);
             }
             vm.stopBroadcast();
         }
 
+        uint64 magnitudeForOperators = 0.1 ether;
         vm.startBroadcast();
         AVS avs = new AVS(avsDirectory, stakeRootCompendium);
         for (uint i = 0; i < strategies.length; i++) {
             avs.createOperatorSetAndRegisterOperators(uint32(i), strategies[i], operators[i]);
+            IAVSDirectory.OperatorSet memory operatorSet = IAVSDirectory.OperatorSet({
+                avs: address(avs),
+                operatorSetId: uint32(i)
+            });
+            for (uint j = 0; j < strategies[i].length; j++) {
+                operatorFactory.allocateForOperators(strategies[i][j], operatorSet, operators[i], magnitudeForOperators);
+            }
         }
         vm.stopBroadcast();
 
@@ -139,14 +147,16 @@ contract AVS {
 contract OperatorFactory is Test {
     IDelegationManager delegationManager;
     IStrategyManager strategyManager;
-    constructor(IDelegationManager _delegationManager, IStrategyManager _strategyManager) {
+    IAVSDirectory avsDirectory;
+    constructor(IDelegationManager _delegationManager, IStrategyManager _strategyManager, IAVSDirectory _avsDirectory) {
         delegationManager = _delegationManager;
         strategyManager = _strategyManager;
+        avsDirectory = _avsDirectory;
     }
 
     uint256 constant AMOUNT_TOKEN = 1000;
 
-    function createManyOperators(IStrategy[] memory strategies, uint256 numOperatorsPerOpset, uint256 tokenAmountPerOperator) public returns(address[] memory) {
+    function createManyOperators(IStrategy[] memory strategies, uint256 numOperatorsPerOpset) public returns(address[] memory) {
         IERC20[] memory tokens = new IERC20[](strategies.length);
         // approve all transfers
         for (uint256 i = 0; i < strategies.length; ++i) {
@@ -167,6 +177,38 @@ contract OperatorFactory is Test {
         
         for (uint256 i = 0; i < operators.length; ++i) {
             strategyManager.depositIntoStrategyWithSignature(strategy, token, tokenAmountPerOperator, operators[i], type(uint256).max, hex"");
+        }
+    }
+
+    function allocateForOperators(IStrategy strategy, IAVSDirectory.OperatorSet calldata operatorSet, address[] memory operators, uint64 magnitudeForOperators) public {
+        uint64 expectedTotalMagnitude = avsDirectory.INITIAL_TOTAL_MAGNITUDE();
+
+        IAVSDirectory.OperatorSet[] memory operatorSets = new IAVSDirectory.OperatorSet[](1);
+        operatorSets[0] = operatorSet;
+
+        uint64[] memory magnitudes = new uint64[](1);
+        magnitudes[0] = magnitudeForOperators;
+
+        IAVSDirectory.MagnitudeAllocation[] memory allocations = new IAVSDirectory.MagnitudeAllocation[](1);
+        allocations[0] = IAVSDirectory.MagnitudeAllocation({
+            strategy: strategy,
+            expectedTotalMagnitude: expectedTotalMagnitude,
+            operatorSets: operatorSets,
+            magnitudes: magnitudes
+        });
+
+        ISignatureUtils.SignatureWithSaltAndExpiry memory signature = ISignatureUtils.SignatureWithSaltAndExpiry({
+            signature: hex"",
+            salt: bytes32(0),
+            expiry: type(uint256).max
+        });
+
+        for (uint256 i = 0; i < operators.length; ++i) {            
+            avsDirectory.modifyAllocations(
+                operators[i],
+                allocations,
+                signature
+            );
         }
     }
 }

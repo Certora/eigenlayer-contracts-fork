@@ -291,6 +291,9 @@ interface IAVSDirectory is ISignatureUtils {
      *
      */
 
+    /// @dev The initial total magnitude for an operator
+    function INITIAL_TOTAL_MAGNITUDE() external view returns (uint64);
+
     /**
      * @notice operator is slashable by operatorSet if currently registered OR last deregistered within 21 days
      * @param operator the operator to check slashability for
@@ -300,22 +303,22 @@ interface IAVSDirectory is ISignatureUtils {
     function isOperatorSlashable(address operator, OperatorSet memory operatorSet) external view returns (bool);
 
     /**
-     * @param operator the operator to get the slashable bips for
-     * @param operatorSet the operatorSet to get the slashable bips for
-     * @param strategy the strategy to get the slashable bips for
-     * @param timestamp the timestamp to get the slashable bips for for
+     * @param operator the operator to get the slashable ppm for
+     * @param operatorSet the operatorSet to get the slashable ppm for
+     * @param strategies the strategies to get the slashable ppm for
+     * @param timestamp the timestamp to get the slashable ppm for for
      * @param linear whether the search should be linear (from the most recent) or binary
      *
-     * @return slashableBips the slashable bips of the given strategy owned by
+     * @return slashablePPM the slashable ppm of the given list of strategies allocated to
      * the given OperatorSet for the given operator and timestamp
      */
-    function getSlashableBips(
+    function getSlashablePPM(
         address operator,
         OperatorSet calldata operatorSet,
-        IStrategy strategy,
+        IStrategy[] calldata strategies,
         uint32 timestamp,
         bool linear
-    ) external view returns (uint16);
+    ) external view returns (uint24[] memory);
     
     function operatorSaltIsSpent(address operator, bytes32 salt) external view returns (bool);
 

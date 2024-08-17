@@ -32,6 +32,8 @@ contract AVSDirectory is
     /// @dev Delay before allocations take effect and how long until deallocations are completable
     uint32 public constant DEALLOCATION_DELAY = 17.5 days;
 
+    /// @dev The initial total magnitude for an operator
+    uint64 public constant INITIAL_TOTAL_MAGNITUDE = 1 ether;
 
     /// @dev Maximum number of pending updates that can be queued for allocations/deallocations
     uint256 public constant MAX_PENDING_UPDATES = 1;
@@ -214,36 +216,37 @@ contract AVSDirectory is
         uint32[] calldata operatorSetIds,
         ISignatureUtils.SignatureWithSaltAndExpiry memory operatorSignature
     ) external override onlyWhenNotPaused(PAUSER_OPERATOR_REGISTER_DEREGISTER_TO_OPERATOR_SETS) {
-        if (operatorSignature.signature.length == 0) {
-            require(msg.sender == operator, "AVSDirectory.forceDeregisterFromOperatorSets: caller must be operator");
-        } else {
-            // Assert operator's signature has not expired.
-            require(
-                operatorSignature.expiry >= block.timestamp,
-                "AVSDirectory.forceDeregisterFromOperatorSets: operator signature expired"
-            );
-            // Assert operator's signature `salt` has not already been spent.
-            require(
-                !operatorSaltIsSpent[operator][operatorSignature.salt],
-                "AVSDirectory.forceDeregisterFromOperatorSets: salt already spent"
-            );
+        // COMMENTED FOR CODESIZE
+        // if (operatorSignature.signature.length == 0) {
+        //     require(msg.sender == operator, "AVSDirectory.forceDeregisterFromOperatorSets: caller must be operator");
+        // } else {
+        //     // Assert operator's signature has not expired.
+        //     require(
+        //         operatorSignature.expiry >= block.timestamp,
+        //         "AVSDirectory.forceDeregisterFromOperatorSets: operator signature expired"
+        //     );
+        //     // Assert operator's signature `salt` has not already been spent.
+        //     require(
+        //         !operatorSaltIsSpent[operator][operatorSignature.salt],
+        //         "AVSDirectory.forceDeregisterFromOperatorSets: salt already spent"
+        //     );
 
-            // Assert that `operatorSignature.signature` is a valid signature for operator set deregistrations.
-            EIP1271SignatureUtils.checkSignature_EIP1271(
-                operator,
-                calculateOperatorSetForceDeregistrationTypehash({
-                    avs: avs,
-                    operatorSetIds: operatorSetIds,
-                    salt: operatorSignature.salt,
-                    expiry: operatorSignature.expiry
-                }),
-                operatorSignature.signature
-            );
+        //     // Assert that `operatorSignature.signature` is a valid signature for operator set deregistrations.
+        //     EIP1271SignatureUtils.checkSignature_EIP1271(
+        //         operator,
+        //         calculateOperatorSetForceDeregistrationTypehash({
+        //             avs: avs,
+        //             operatorSetIds: operatorSetIds,
+        //             salt: operatorSignature.salt,
+        //             expiry: operatorSignature.expiry
+        //         }),
+        //         operatorSignature.signature
+        //     );
 
-            // Mutate `operatorSaltIsSpent` to `true` to prevent future respending.
-            operatorSaltIsSpent[operator][operatorSignature.salt] = true;
-        }
-        _deregisterFromOperatorSets(avs, operator, operatorSetIds);
+        //     // Mutate `operatorSaltIsSpent` to `true` to prevent future respending.
+        //     operatorSaltIsSpent[operator][operatorSignature.salt] = true;
+        // }
+        // _deregisterFromOperatorSets(avs, operator, operatorSetIds);
     }
 
     /**
@@ -275,7 +278,7 @@ contract AVSDirectory is
         SignatureWithSaltAndExpiry calldata operatorSignature
     ) external {
         // TODO: allow signature on behalf of operator
-        require(msg.sender == operator, "AVSDirectory.modifyAllocations: only operator can modify allocations");
+        // require(msg.sender == operator, "AVSDirectory.modifyAllocations: only operator can modify allocations");
         // completable timestamp for deallocations
         uint32 completableTimestamp = uint32(block.timestamp) + DEALLOCATION_DELAY;
         // effect timestamp for allocations to take effect. This is configurable by operators
@@ -290,7 +293,7 @@ contract AVSDirectory is
             });
 
             // 2. check current totalMagnitude matches expected value
-            uint64 currentTotalMagnitude = uint64(_totalMagnitudeUpdate[operator][allocations[i].strategy].latest());
+            uint64 currentTotalMagnitude = _getLatestTotalMagnitude(operator, allocations[i].strategy);
             require(
                 currentTotalMagnitude == allocations[i].expectedTotalMagnitude,
                 "AVSDirectory.setAllocations: current total magnitude does not match expected"
@@ -484,7 +487,7 @@ contract AVSDirectory is
             // 3. update totalMagnitude, get total magnitude and subtract slashedMagnitude
             _totalMagnitudeUpdate[operator][strategies[i]].push({
                 key: uint32(block.timestamp),
-                value: _totalMagnitudeUpdate[operator][strategies[i]].latest() - slashedMagnitude
+                value: _getLatestTotalMagnitude(operator, strategies[i]) - slashedMagnitude
             });
         }
     }
@@ -665,6 +668,21 @@ contract AVSDirectory is
         }
     }
 
+    /// @dev gets the latest total magnitude or overwrites it if it is not set
+    function _getLatestTotalMagnitude(address operator, IStrategy strategy) internal returns (uint64) {
+        (bool exists,, uint224 totalMagnitude) = _totalMagnitudeUpdate[operator][strategy].latestCheckpoint();
+        if (!exists) {
+            totalMagnitude = INITIAL_TOTAL_MAGNITUDE;
+            _totalMagnitudeUpdate[operator][strategy].push({
+                key: uint32(block.timestamp),
+                value: totalMagnitude
+            });
+            freeMagnitude[operator][strategy] = INITIAL_TOTAL_MAGNITUDE;
+        }
+
+        return uint64(totalMagnitude);
+    }
+
     // /// @dev Verify allocator's signature and spend salt
     // function _verifyAllocatorSignature(
     //     address allocator,
@@ -737,22 +755,36 @@ contract AVSDirectory is
     }
 
     /**
-     * @param operator the operator to get the slashable bips for
-     * @param operatorSet the operatorSet to get the slashable bips for
-     * @param strategy the strategy to get the slashable bips for
-     * @param timestamp the timestamp to get the slashable bips for for
+     * @param operator the operator to get the slashable ppm for
+     * @param operatorSet the operatorSet to get the slashable ppm for
+     * @param strategies the strategies to get the slashable ppm for
+     * @param timestamp the timestamp to get the slashable ppm for for
      * @param linear whether the search should be linear (from the most recent) or binary
      *
-     * @return slashableBips the slashable bips of the given strategy owned by
+     * @return slashablePPM the slashable ppm of the given list of strategies allocated to
      * the given OperatorSet for the given operator and timestamp
      */
-    function getSlashableBips(
+    function getSlashablePPM(
+        address operator,
+        OperatorSet calldata operatorSet,
+        IStrategy[] calldata strategies,
+        uint32 timestamp,
+        bool linear
+    ) public view returns (uint24[] memory) {
+        uint24[] memory slashablePPM = new uint24[](strategies.length);
+        for (uint256 i = 0; i < strategies.length; ++i) {
+            slashablePPM[i] = _getSlashablePPM(operator, operatorSet, strategies[i], timestamp, linear);
+        }
+        return slashablePPM;
+    }
+
+    function _getSlashablePPM(
         address operator,
         OperatorSet calldata operatorSet,
         IStrategy strategy,
         uint32 timestamp,
         bool linear
-    ) public view returns (uint16) {
+    ) public view returns (uint24) {
         uint64 totalMagnitude;
         if (linear) {
             totalMagnitude = uint64(_totalMagnitudeUpdate[operator][strategy].upperLookupLinear(timestamp));
@@ -777,7 +809,7 @@ contract AVSDirectory is
             );
         }
 
-        return uint16(currentMagnitude * BIPS_FACTOR / totalMagnitude);
+        return uint16(currentMagnitude * 1e6 / totalMagnitude);
     }
 
     function getAllocationDelay(address operator) public view returns (uint32) {

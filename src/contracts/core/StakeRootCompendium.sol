@@ -176,13 +176,16 @@ contract StakeRootCompendium is IStakeRootCompendium, OwnableUpgradeable {
                 multipliers[j] = multiplier;
             }
 
-            uint256[] memory shares = delegationManager.getOperatorShares(operators[i], strategies);
-            uint256 stake = 0;
+            uint256[] memory delegatedShares = delegationManager.getOperatorShares(operators[i], strategies);
+            uint24[] memory operatorSlashablePPM = avsDirectory.getSlashablePPM(operators[i], operatorSet, strategies, uint32(block.timestamp), true);
+            uint256 delegatedStake = 0;
+            uint256 slashableStake = 0;
             for (uint256 j = 0; j < strategies.length; j++) {
-                stake += shares[j] * multipliers[j];
+                delegatedStake += delegatedShares[j] * multipliers[j];
+                slashableStake += delegatedShares[j] * multipliers[j] * operatorSlashablePPM[j] / 1e6;
             }
 
-            operatorLeaves[i] =  keccak256(abi.encodePacked(operators[i], stake));    
+            operatorLeaves[i] =  keccak256(abi.encodePacked(operators[i], delegatedStake, slashableStake));    
         }
         return Merkle.merkleizeKeccak256(operatorLeaves);
     }
