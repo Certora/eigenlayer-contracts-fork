@@ -304,6 +304,7 @@ interface IAVSDirectory is ISignatureUtils {
      * @param operatorSet the operatorSet to get the slashable bips for
      * @param strategy the strategy to get the slashable bips for
      * @param timestamp the timestamp to get the slashable bips for for
+     * @param linear whether the search should be linear (from the most recent) or binary
      *
      * @return slashableBips the slashable bips of the given strategy owned by
      * the given OperatorSet for the given operator and timestamp
@@ -312,7 +313,8 @@ interface IAVSDirectory is ISignatureUtils {
         address operator,
         OperatorSet calldata operatorSet,
         IStrategy strategy,
-        uint32 timestamp
+        uint32 timestamp,
+        bool linear
     ) external view returns (uint16);
     
     function operatorSaltIsSpent(address operator, bytes32 salt) external view returns (bool);
@@ -322,6 +324,8 @@ interface IAVSDirectory is ISignatureUtils {
     function isOperatorSetAVS(address avs) external view returns (bool);
 
     function isOperatorSet(address avs, uint32 operatorSetId) external view returns (bool);
+
+    function operatorSetMemberCount(address avs, uint32 operatorSetId) external view returns (uint256);
 
     /**
      *  @notice Calculates the digest hash to be signed by an operator to register with an AVS.
