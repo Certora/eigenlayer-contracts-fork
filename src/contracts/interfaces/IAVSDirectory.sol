@@ -291,9 +291,6 @@ interface IAVSDirectory is ISignatureUtils {
      *
      */
 
-    /// @dev The initial total magnitude for an operator
-    function INITIAL_TOTAL_MAGNITUDE() external view returns (uint64);
-
     /**
      * @notice operator is slashable by operatorSet if currently registered OR last deregistered within 21 days
      * @param operator the operator to check slashability for
@@ -319,7 +316,10 @@ interface IAVSDirectory is ISignatureUtils {
         uint32 timestamp,
         bool linear
     ) external view returns (uint24[] memory);
-    
+
+    /// @notice Returns the total magnitude of an operator for a given set of strategies
+    function getTotalMagnitudes(address operator, IStrategy[] calldata strategies) external view returns (uint64[] memory);
+
     function operatorSaltIsSpent(address operator, bytes32 salt) external view returns (bool);
 
     function isMember(address operator, OperatorSet memory operatorSet) external view returns (bool);

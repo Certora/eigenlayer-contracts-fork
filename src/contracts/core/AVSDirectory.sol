@@ -7,6 +7,7 @@ import "@openzeppelin-upgrades/contracts/security/ReentrancyGuardUpgradeable.sol
 
 import "../permissions/Pausable.sol";
 import "../libraries/EIP1271SignatureUtils.sol";
+import "../libraries/ShareScalingLib.sol";
 import "./AVSDirectoryStorage.sol";
 
 contract AVSDirectory is
@@ -31,9 +32,6 @@ contract AVSDirectory is
 
     /// @dev Delay before allocations take effect and how long until deallocations are completable
     uint32 public constant DEALLOCATION_DELAY = 17.5 days;
-
-    /// @dev The initial total magnitude for an operator
-    uint64 public constant INITIAL_TOTAL_MAGNITUDE = 1 ether;
 
     /// @dev Maximum number of pending updates that can be queued for allocations/deallocations
     uint256 public constant MAX_PENDING_UPDATES = 1;
@@ -677,15 +675,49 @@ contract AVSDirectory is
     function _getLatestTotalMagnitude(address operator, IStrategy strategy) internal returns (uint64) {
         (bool exists,, uint224 totalMagnitude) = _totalMagnitudeUpdate[operator][strategy].latestCheckpoint();
         if (!exists) {
-            totalMagnitude = INITIAL_TOTAL_MAGNITUDE;
+            totalMagnitude = ShareScalingLib.INITIAL_TOTAL_MAGNITUDE;
             _totalMagnitudeUpdate[operator][strategy].push({
                 key: uint32(block.timestamp),
                 value: totalMagnitude
             });
-            freeMagnitude[operator][strategy] = INITIAL_TOTAL_MAGNITUDE;
+            freeMagnitude[operator][strategy] = ShareScalingLib.INITIAL_TOTAL_MAGNITUDE;
         }
 
         return uint64(totalMagnitude);
+    }
+
+    function _getSlashablePPM(
+        address operator,
+        OperatorSet calldata operatorSet,
+        IStrategy strategy,
+        uint32 timestamp,
+        bool linear
+    ) public view returns (uint24) {
+        uint64 totalMagnitude;
+        if (linear) {
+            totalMagnitude = uint64(_totalMagnitudeUpdate[operator][strategy].upperLookupLinear(timestamp));
+        } else {
+            totalMagnitude = uint64(_totalMagnitudeUpdate[operator][strategy].upperLookup(timestamp));
+        }
+        // return early if totalMagnitude is 0
+        if (totalMagnitude == 0) {
+            return 0;
+        }
+
+        uint64 currentMagnitude;
+        if (linear) {
+            currentMagnitude = uint64(
+                _magnitudeUpdate[operator][strategy][operatorSet.avs][operatorSet.operatorSetId].upperLookupLinear(
+                    timestamp
+                )
+            );
+        } else {
+            currentMagnitude = uint64(
+                _magnitudeUpdate[operator][strategy][operatorSet.avs][operatorSet.operatorSetId].upperLookup(timestamp)
+            );
+        }
+
+        return uint16(currentMagnitude * 1e6 / totalMagnitude);
     }
 
     // /// @dev Verify allocator's signature and spend salt
@@ -760,6 +792,15 @@ contract AVSDirectory is
     }
 
     /**
+     * @notice Returns the allocation delay for an operator
+     * @param operator the operator to get the allocation delay for
+     */
+    function getAllocationDelay(address operator) public view returns (uint32) {
+        AllocationDelayDetails memory details = allocationDelay[operator];
+        return details.isSet ? details.allocationDelay : DEFAULT_ALLOCATION_DELAY;
+    }
+
+    /**
      * @param operator the operator to get the slashable ppm for
      * @param operatorSet the operatorSet to get the slashable ppm for
      * @param strategies the strategies to get the slashable ppm for
@@ -783,51 +824,26 @@ contract AVSDirectory is
         return slashablePPM;
     }
 
-    function _getSlashablePPM(
-        address operator,
-        OperatorSet calldata operatorSet,
-        IStrategy strategy,
-        uint32 timestamp,
-        bool linear
-    ) public view returns (uint24) {
-        uint64 totalMagnitude;
-        if (linear) {
-            totalMagnitude = uint64(_totalMagnitudeUpdate[operator][strategy].upperLookupLinear(timestamp));
-        } else {
-            totalMagnitude = uint64(_totalMagnitudeUpdate[operator][strategy].upperLookup(timestamp));
-        }
-        // return early if totalMagnitude is 0
-        if (totalMagnitude == 0) {
-            return 0;
-        }
-
-        uint64 currentMagnitude;
-        if (linear) {
-            currentMagnitude = uint64(
-                _magnitudeUpdate[operator][strategy][operatorSet.avs][operatorSet.operatorSetId].upperLookupLinear(
-                    timestamp
-                )
-            );
-        } else {
-            currentMagnitude = uint64(
-                _magnitudeUpdate[operator][strategy][operatorSet.avs][operatorSet.operatorSetId].upperLookup(timestamp)
-            );
-        }
-
-        return uint16(currentMagnitude * 1e6 / totalMagnitude);
-    }
-
-    function getAllocationDelay(address operator) public view returns (uint32) {
-        AllocationDelayDetails memory details = allocationDelay[operator];
-        return details.isSet ? details.allocationDelay : DEFAULT_ALLOCATION_DELAY;
-    }
-
     /// @notice operator is slashable by operatorSet if currently registered OR last deregistered within 21 days
     function isOperatorSlashable(address operator, OperatorSet memory operatorSet) public view returns (bool) {
         OperatorSetRegistrationStatus memory registrationStatus =
             operatorSetStatus[operatorSet.avs][operator][operatorSet.operatorSetId];
         return isMember(operator, operatorSet)
             || registrationStatus.lastDeregisteredTimestamp + DEALLOCATION_DELAY >= block.timestamp;
+    }
+
+    /// @notice Returns the total magnitude of an operator for a given set of strategies
+    function getTotalMagnitudes(address operator, IStrategy[] calldata strategies) public view returns (uint64[] memory) {
+        uint64[] memory totalMagnitudes = new uint64[](strategies.length);
+        for (uint256 i = 0; i < strategies.length; ++i) {
+            uint256 totalMagnitudeLength = _totalMagnitudeUpdate[operator][strategies[i]]._checkpoints.length;
+            if (totalMagnitudeLength == 0) {
+                totalMagnitudes[i] = ShareScalingLib.INITIAL_TOTAL_MAGNITUDE;
+            } else {
+                totalMagnitudes[i] = uint64(_totalMagnitudeUpdate[operator][strategies[i]]._checkpoints[totalMagnitudeLength - 1]._value);
+            }
+        }
+        return totalMagnitudes;
     }
 
     // /**
